@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Mobile bridge",
+    "description": "Serves a pairing-protected HTTP/SSE API so the Android client can watch live sessions, send prompts, stop turns and answer approvals.",
+    "detail": "docs/DETAIL.md"
+  }
+}

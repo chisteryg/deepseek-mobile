@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "手机桥接",
+    "description": "提供带配对保护的 HTTP/SSE 接口，让安卓客户端查看实时会话、发送消息、停止回合并处理审批。",
+    "detail": "docs/DETAIL.md"
+  }
+}

@@ -1,0 +1,24 @@
+# 构建产物与本地文件
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/captures/
+android/.kotlin/
+*.apk
+*.aab
+*.iml
+.idea/
+captures/
+.gradle/
+
+# 本地参考材料（原版 App 截图，不随仓库分发）
+ss/
+
+# 大体积原始素材：只保留抠图结果与许可
+assets-src/*.jpg
+
+# 系统与编辑器
+.DS_Store
+Thumbs.db
+*.log
