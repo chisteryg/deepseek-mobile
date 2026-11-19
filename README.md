@@ -76,7 +76,7 @@ cd deepseek-mobile/android
 # 产物：app/build/outputs/apk/debug/app-debug.apk
 ```
 
-> 国内网络如果拉不到 Gradle 依赖，可把 `settings.gradle.kts` 里的阿里云镜像保留（默认已启用），或自行配置代理。Gradle Wrapper 首次运行会下载发行版。
+> 依赖仓库默认按 google / mavenCentral 优先，阿里云镜像作为兜底，国内外网络都能构建。Gradle Wrapper 首次运行会下载发行版。
 
 也可以直接下载 CI 构建的产物：仓库 **Actions → Android CI → 最新一次运行 → Artifacts**。
 
