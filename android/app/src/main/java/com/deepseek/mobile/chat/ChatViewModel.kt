@@ -50,7 +50,7 @@ class ChatViewModel(
     init {
         viewModelScope.launch { runCatching { balanceStore.refresh() } }
         viewModelScope.launch {
-            val all = store.load().sortedByDescending { it.updatedAt }
+            val all = store.load().filter { it.messages.isNotEmpty() }.sortedByDescending { it.updatedAt }
             _state.value = _state.value.copy(
                 conversations = all,
                 current = null,
@@ -62,12 +62,9 @@ class ChatViewModel(
     fun newConversation() {
         val model = settings.current.model
         val conversation = Conversation(model = model)
-        _state.value = _state.value.copy(
-            conversations = listOf(conversation) + _state.value.conversations,
-            current = conversation,
-            error = null,
-        )
-        viewModelScope.launch { persist() }
+        // Kept as a draft until the first message arrives, so an untouched
+        // conversation never reaches the list or the store.
+        _state.value = _state.value.copy(current = conversation, error = null)
     }
 
     fun open(id: String) {
@@ -76,7 +73,15 @@ class ChatViewModel(
     }
 
     fun close() {
-        _state.value = _state.value.copy(current = null)
+        val current = _state.value.current
+        val cleaned = if (current != null && current.messages.isEmpty()) {
+            _state.value.conversations.filterNot { it.id == current.id }
+        } else {
+            _state.value.conversations
+        }
+        val changed = cleaned.size != _state.value.conversations.size
+        _state.value = _state.value.copy(conversations = cleaned, current = null)
+        if (changed) viewModelScope.launch { persist(cleaned) }
     }
 
     fun rename(id: String, title: String) {
@@ -96,6 +101,18 @@ class ChatViewModel(
         _state.value = _state.value.copy(
             conversations = next,
             current = if (_state.value.current?.id == id) null else _state.value.current,
+            streaming = false,
+        )
+        viewModelScope.launch { persist(next) }
+    }
+
+    fun deleteMany(ids: Set<String>) {
+        if (ids.isEmpty()) return
+        streamJob?.cancel()
+        val next = _state.value.conversations.filterNot { it.id in ids }
+        _state.value = _state.value.copy(
+            conversations = next,
+            current = _state.value.current?.takeIf { it.id !in ids },
             streaming = false,
         )
         viewModelScope.launch { persist(next) }
@@ -137,7 +154,18 @@ class ChatViewModel(
         citationBuffers.clear()
         firstTextAt = 0L
 
-        _state.value = _state.value.copy(current = updated, streaming = true, error = null)
+        val listed = _state.value.conversations
+        val promoted = if (listed.any { it.id == updated.id }) {
+            listed.map { if (it.id == updated.id) updated else it }
+        } else {
+            listOf(updated) + listed
+        }
+        _state.value = _state.value.copy(
+            conversations = promoted,
+            current = updated,
+            streaming = true,
+            error = null,
+        )
         streamJob = viewModelScope.launch {
             val history = buildHistory(updated.messages.dropLast(1))
             runStream(updated, assistant.id, history)

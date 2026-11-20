@@ -23,6 +23,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -346,6 +347,9 @@ fun CodeBlock(language: String, code: String) {
     val palette = LocalDsPalette.current
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
+    val highlighted = remember(code, language, palette) {
+        highlightCode(code, language, palette.codeKeyword, palette.codeString, palette.codeNumber, palette.codeComment)
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -356,11 +360,12 @@ fun CodeBlock(language: String, code: String) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 2.dp),
+                .padding(start = 12.dp, end = 6.dp, top = 5.dp, bottom = 5.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = language.ifBlank { "code" },
+                text = language.ifBlank { "text" },
                 style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                 color = palette.textTertiary,
             )
@@ -374,20 +379,99 @@ fun CodeBlock(language: String, code: String) {
                         clipboard.setText(AnnotatedString(code))
                         copied = true
                     }
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
             )
         }
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(0.5.dp)
+                .background(palette.border),
+        )
         Text(
-            text = code,
+            text = highlighted,
             style = MaterialTheme.typography.bodyMedium.copy(
                 fontFamily = FontFamily.Monospace,
-                fontSize = 13.sp,
+                fontSize = 12.8.sp,
                 lineHeight = 19.sp,
             ),
             color = palette.textPrimary,
             modifier = Modifier
                 .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 12.dp, vertical = 8.dp),
+                .padding(horizontal = 12.dp, vertical = 10.dp),
         )
+    }
+}
+
+/**
+ * Lightweight tokenizer used for fenced code: comments, strings, numbers,
+ * keywords and call names get colour; everything else keeps the body colour.
+ * It is intentionally small and language-agnostic rather than a full parser.
+ */
+fun highlightCode(
+    code: String,
+    language: String,
+    keywordColor: Color,
+    stringColor: Color,
+    numberColor: Color,
+    commentColor: Color,
+): AnnotatedString {
+    val lang = language.lowercase()
+    val hashComments = lang in setOf("py", "python", "sh", "bash", "zsh", "yaml", "yml", "toml", "rb", "ruby", "r", "makefile", "dockerfile", "ini", "conf")
+    val slashComments = lang !in setOf("py", "python", "sh", "bash", "zsh", "yaml", "yml", "toml", "rb", "ruby", "r", "makefile", "dockerfile")
+    val token = Regex(
+        buildString {
+            append("(/\\*[\\s\\S]*?\\*/)")
+            if (slashComments) append("|(//[^\\n]*)")
+            if (hashComments) append("|(#[^\\n]*)")
+            append("|(\"(?:\\\\.|[^\"\\\\])*\")")
+            append("|('(?:\\\\.|[^'\\\\])*')")
+            append("|(`[^`]*`)")
+            append("|(\\b\\d+(?:\\.\\d+)?\\b)")
+            append("|(\\b[A-Za-z_][A-Za-z0-9_]*\\b)")
+        },
+    )
+    val keywords = setOf(
+        "val", "var", "fun", "class", "object", "interface", "data", "suspend", "override",
+        "private", "public", "internal", "protected", "import", "package", "return",
+        "if", "else", "for", "while", "when", "do", "try", "catch", "finally", "throw",
+        "true", "false", "null", "const", "let", "new", "this", "super", "typealias",
+        "def", "async", "await", "from", "as", "in", "is", "not", "and", "or", "None",
+        "True", "False", "lambda", "pass", "raise", "except", "with", "yield", "global",
+        "function", "export", "default", "extends", "implements", "static", "void",
+        "int", "float", "double", "bool", "string", "char", "struct", "enum", "const",
+        "switch", "case", "break", "continue", "typeof", "instanceof", "delete",
+        "match", "elif", "print", "println", "console",
+    )
+    return buildAnnotatedString {
+        var cursor = 0
+        for (match in token.findAll(code)) {
+            if (match.range.first > cursor) append(code.substring(cursor, match.range.first))
+            val value = match.value
+            val group = match.groups
+            when {
+                group[1] != null || group[2] != null || group[3] != null -> withStyle(
+                    SpanStyle(color = commentColor, fontStyle = FontStyle.Italic),
+                ) { append(value) }
+                group[4] != null || group[5] != null || group[6] != null -> withStyle(
+                    SpanStyle(color = stringColor),
+                ) { append(value) }
+                group[7] != null -> withStyle(SpanStyle(color = numberColor)) { append(value) }
+                else -> {
+                    val after = code.getOrNull(match.range.last + 1)
+                    when {
+                        value in keywords -> withStyle(
+                            SpanStyle(color = keywordColor, fontWeight = FontWeight.Medium),
+                        ) { append(value) }
+                        after == '(' -> withStyle(SpanStyle(color = keywordColor.copy(alpha = 0.9f))) {
+                            append(value)
+                        }
+                        else -> append(value)
+                    }
+                }
+            }
+            cursor = match.range.last + 1
+        }
+        if (cursor < code.length) append(code.substring(cursor))
     }
 }

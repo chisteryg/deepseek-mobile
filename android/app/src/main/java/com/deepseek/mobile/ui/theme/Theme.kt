@@ -37,6 +37,10 @@ data class DsPalette(
     val success: Color,
     val warning: Color,
     val danger: Color,
+    val codeKeyword: Color,
+    val codeString: Color,
+    val codeNumber: Color,
+    val codeComment: Color,
 )
 
 private val LightPalette = DsPalette(
@@ -55,6 +59,10 @@ private val LightPalette = DsPalette(
     success = Color(0xFF1F9D63),
     warning = Color(0xFFB27A00),
     danger = Color(0xFFD14343),
+    codeKeyword = Color(0xFF7B4DFF),
+    codeString = Color(0xFF1E7F4F),
+    codeNumber = Color(0xFFB26200),
+    codeComment = Color(0xFF9AA1AE),
 )
 
 private val DarkPalette = DsPalette(
@@ -73,6 +81,10 @@ private val DarkPalette = DsPalette(
     success = Color(0xFF4ECB8F),
     warning = Color(0xFFE0AD4A),
     danger = Color(0xFFFF8A80),
+    codeKeyword = Color(0xFFB69CFF),
+    codeString = Color(0xFF7FD1A6),
+    codeNumber = Color(0xFFE0AD4A),
+    codeComment = Color(0xFF6E7687),
 )
 
 val LocalDsPalette = staticCompositionLocalOf { LightPalette }

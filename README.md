@@ -13,9 +13,9 @@
 
 ## 截图
 
-| 对话 | 设置（余额 / 模型） | Harness | 图标 |
+| 对话 | 多选删除 | Harness | 工具与权限 |
 |---|---|---|---|
-| ![对话](screenshots/light-02-chat-detail.png) | ![设置](screenshots/light-05-settings.png) | ![Harness](screenshots/light-03-harness-list.png) | ![图标](screenshots/light-08-icon.png) |
+| ![对话](screenshots/light-02-chat-detail.png) | ![多选](screenshots/light-09-chat-select.png) | ![Harness](screenshots/light-04-harness-detail.png) | ![设置](screenshots/light-05-settings.png) |
 
 深色模式与其余页面见 [`screenshots/`](screenshots)。
 
@@ -28,7 +28,11 @@
 - 图片：相册选择 / 拍照，自动压缩到最长边 1568px 后按 image block 发送
 - 文档：PDF / Word / PPT / 文本 / 表格 / 电子书，走 Files API 解析后用 `document` block 引用
 - 每条回答末尾：`模型 · 本次花费 · 余额` 与 `输入 N（命中 X · 未命中 Y）· 输出 Z`
-- 本地会话库，可按日期分组、重命名、删除、重新生成
+- 本地会话库：按日期分组、重命名、**多选批量删除**；没发过消息的新对话不会留在列表里
+- 只发附件也能直接发送：拍一张照、选张图或传个文件，不写字也能发
+- 代码块按语言做轻量语法高亮（关键字 / 字符串 / 数字 / 注释 / 调用）
+- 来源引用改为紧凑的编号小标签，不再整块弹出
+- 回答过程中手指一碰列表就停止自动跟随，随时可以往上翻；回到底部按钮可恢复
 - 深色 / 浅色主题，字号与间距按官方 App 的比例
 
 **Harness 模式**
@@ -37,6 +41,9 @@
 - 会话列表：运行中 / 等待批准 / 空闲，工作目录与最近活动时间
 - 会话详情：按「用户提问 → 助手步骤」聚合，思考折叠、工具调用摘要、Markdown 正文
 - 发送、插话（steer）、停止当前回合
+- **附件**：拍照 / 相册 / 文件，文件走桌面端 `fileUploads` 上传后以 receipt 引用，只有附件也能发
+- **权限设置**：切换 `read-only` / `workspace-write` / `danger-full-access`，开关审批询问（`ask` / `never`）
+- **工具调用卡片**：显示执行中 / 完成 / 失败，展开可看参数与结果
 - 审批接管：手机最近 60 秒活跃时由手机回答，否则交回桌面端
 - 模型与思考档位切换（`off / low / high / max`）
 - 顶部连接状态条：已连接主机、会话数、同步时间；断线显示原因并可重试

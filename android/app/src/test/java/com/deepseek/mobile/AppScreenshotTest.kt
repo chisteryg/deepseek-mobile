@@ -29,6 +29,10 @@ import com.deepseek.mobile.harness.ModelCatalog
 import com.deepseek.mobile.harness.ModelChoice
 import com.deepseek.mobile.harness.ModelEffort
 import com.deepseek.mobile.harness.ModelGroup
+import com.deepseek.mobile.harness.PermissionCatalog
+import com.deepseek.mobile.harness.PermissionOption
+import com.deepseek.mobile.harness.SessionPermissions
+import com.deepseek.mobile.harness.BridgeUpload
 import com.deepseek.mobile.ui.AppRoot
 import com.github.takahirom.roborazzi.captureRoboImage
 import kotlinx.coroutines.awaitCancellation
@@ -166,6 +170,37 @@ class AppScreenshotTest {
 
         override suspend fun interactions(): List<BridgeInteraction> = emptyList()
 
+        override suspend fun permissions(sessionId: String): SessionPermissions = SessionPermissions(
+            preset = "workspace-write",
+            approvalPolicy = "ask",
+            catalog = PermissionCatalog(
+                options = listOf(
+                    PermissionOption("read-only", "read-only", "只能读取工作区"),
+                    PermissionOption("workspace-write", "workspace-write", "可写当前工作区"),
+                    PermissionOption("danger-full-access", "danger-full-access", "不受沙箱限制"),
+                ),
+                defaultPreset = "workspace-write",
+            ),
+        )
+
+        override suspend fun setPermissions(
+            sessionId: String,
+            preset: String?,
+            approvalPolicy: String?,
+        ): SessionPermissions {
+            val base = permissions(sessionId)
+            return base.copy(
+                preset = preset ?: base.preset,
+                approvalPolicy = approvalPolicy ?: base.approvalPolicy,
+            )
+        }
+
+        override suspend fun uploadDocument(
+            sessionId: String,
+            bytes: ByteArray,
+            name: String,
+        ): BridgeUpload = BridgeUpload("receipt-demo", name, bytes.size)
+
         override suspend fun models(): ModelCatalog = ModelCatalog(
             defaultProvider = "deepseek-official",
             defaultModel = "deepseek-flash",
@@ -216,19 +251,35 @@ class AppScreenshotTest {
                                         put("text", "先看现有布局的问题，再决定怎么改配色和间距。")
                                     })
                                     add(buildJsonObject {
-                                        put("type", "tool-call")
-                                        put("name", "edit")
-                                        put("arguments", "{\"file_path\":\"C:\\\\app\\\\ChatScreens.kt\"}")
-                                    })
-                                    add(buildJsonObject {
                                         put("type", "text")
                                         put("text", "改好了：统一了圆角和间距，输入栏加了图片入口，键盘弹出时不再遮挡正文。")
                                     })
                                 })
                             })
                         }),
+                        record("tool/call", 3, buildJsonObject {
+                            put("turn", 1)
+                            put("step", 1)
+                            put("callId", "call-1")
+                            put("name", "edit")
+                            put("arguments", "{\"file_path\":\"C:\\\\app\\\\ChatScreens.kt\"}")
+                        }),
+                        record("tool/result", 4, buildJsonObject {
+                            put("turn", 1)
+                            put("step", 1)
+                            put("message", buildJsonObject {
+                                put("role", "tool")
+                                put("toolCallId", "call-1")
+                                put("content", buildJsonArray {
+                                    add(buildJsonObject {
+                                        put("type", "text")
+                                        put("text", "Updated ChatScreens.kt (+42 -18)")
+                                    })
+                                })
+                            })
+                        }),
                     ),
-                    cursor = 2,
+                    cursor = 4,
                     header = null,
                 ),
             )
@@ -272,6 +323,12 @@ class AppScreenshotTest {
         compose.setContent { AppRoot(app.container) }
         compose.waitForIdle()
         compose.onRoot().captureRoboImage("build/screenshots/light-01-chat-list.png")
+
+        compose.onNodeWithContentDescription("多选").performClick()
+        compose.waitForIdle()
+        compose.onRoot().captureRoboImage("build/screenshots/light-09-chat-select.png")
+        compose.onNodeWithContentDescription("返回").performClick()
+        compose.waitForIdle()
 
         compose.onNodeWithText("安卓版 DeepSeek 方案").performClick()
         compose.waitForIdle()

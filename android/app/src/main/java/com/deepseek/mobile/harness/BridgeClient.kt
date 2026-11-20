@@ -18,6 +18,8 @@ import kotlinx.coroutines.job
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
@@ -152,11 +154,30 @@ open class BridgeClient(
         }
     }
 
-    open suspend fun prompt(sessionId: String, text: String, mode: String = "queue") = withContext(Dispatchers.IO) {
+    open suspend fun prompt(
+        sessionId: String,
+        text: String,
+        mode: String = "queue",
+        files: List<String> = emptyList(),
+        images: List<String> = emptyList(),
+    ) = withContext(Dispatchers.IO) {
         val current = settings.current
         val body = buildJsonObject {
             put("text", text)
             put("mode", mode)
+            if (files.isNotEmpty()) {
+                put("files", buildJsonArray { files.forEach { add(it) } })
+            }
+            if (images.isNotEmpty()) {
+                put("images", buildJsonArray {
+                    images.forEach { encoded ->
+                        add(buildJsonObject {
+                            put("mediaType", "image/jpeg")
+                            put("data", encoded)
+                        })
+                    }
+                })
+            }
         }.toString().toRequestBody(mediaType)
         http.newCall(
             request("/api/sessions/$sessionId/prompt", current.bridgeToken).post(body).build(),
@@ -164,6 +185,80 @@ open class BridgeClient(
             val raw = response.body?.string().orEmpty()
             if (!response.isSuccessful) throw BridgeException(extractError(raw, response.code))
         }
+    }
+
+    open suspend fun uploadDocument(
+        sessionId: String,
+        bytes: ByteArray,
+        name: String,
+    ): BridgeUpload = withContext(Dispatchers.IO) {
+        val current = settings.current
+        val body = buildJsonObject {
+            put("name", name)
+            put("data", android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP))
+        }.toString().toRequestBody(mediaType)
+        http.newCall(
+            request("/api/sessions/$sessionId/upload", current.bridgeToken).post(body).build(),
+        ).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw BridgeException(extractError(text, response.code))
+            val root = json.parseToJsonElement(text).jsonObject
+            BridgeUpload(
+                receiptId = root.str("receiptId") ?: throw BridgeException("上传响应缺少 receiptId"),
+                name = root.str("name").orEmpty().ifBlank { name },
+                bytes = root.int("bytes") ?: bytes.size,
+            )
+        }
+    }
+
+    open suspend fun permissions(sessionId: String): SessionPermissions = withContext(Dispatchers.IO) {
+        val current = settings.current
+        http.newCall(
+            request("/api/sessions/$sessionId/permissions", current.bridgeToken).get().build(),
+        ).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw BridgeException(extractError(text, response.code))
+            parsePermissions(json.parseToJsonElement(text).jsonObject)
+        }
+    }
+
+    open suspend fun setPermissions(
+        sessionId: String,
+        preset: String? = null,
+        approvalPolicy: String? = null,
+    ): SessionPermissions = withContext(Dispatchers.IO) {
+        val current = settings.current
+        val body = buildJsonObject {
+            if (preset != null) put("preset", preset)
+            if (approvalPolicy != null) put("approvalPolicy", approvalPolicy)
+        }.toString().toRequestBody(mediaType)
+        http.newCall(
+            request("/api/sessions/$sessionId/permissions", current.bridgeToken).post(body).build(),
+        ).execute().use { response ->
+            val text = response.body?.string().orEmpty()
+            if (!response.isSuccessful) throw BridgeException(extractError(text, response.code))
+            parsePermissions(json.parseToJsonElement(text).jsonObject)
+        }
+    }
+
+    private fun parsePermissions(root: JsonObject): SessionPermissions {
+        val catalog = root.obj("catalog")
+        return SessionPermissions(
+            preset = root.str("preset"),
+            approvalPolicy = root.str("approvalPolicy"),
+            catalog = catalog?.let {
+                PermissionCatalog(
+                    options = it.arr("options")?.objects()?.map { option ->
+                        PermissionOption(
+                            value = option.str("value").orEmpty(),
+                            name = option.str("name").orEmpty(),
+                            description = option.str("description"),
+                        )
+                    } ?: emptyList(),
+                    defaultPreset = it.str("defaultPreset").orEmpty(),
+                )
+            },
+        )
     }
 
     open suspend fun models(): ModelCatalog = withContext(Dispatchers.IO) {

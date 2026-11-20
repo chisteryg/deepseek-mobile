@@ -4,11 +4,9 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Build
-import androidx.compose.material.icons.filled.Email
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Icon
+import androidx.compose.ui.res.painterResource
+import com.deepseek.mobile.R
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
@@ -98,21 +96,21 @@ private fun AppShell(container: AppContainer, settings: Settings) {
                     NavigationBarItem(
                         selected = tab == 0,
                         onClick = { tab = 0 },
-                        icon = { Icon(Icons.Filled.Email, contentDescription = null) },
+                        icon = { Icon(painterResource(R.drawable.ic_nav_chat), contentDescription = null) },
                         label = { Text("对话") },
                         colors = navItemColors(),
                     )
                     NavigationBarItem(
                         selected = tab == 1,
                         onClick = { tab = 1 },
-                        icon = { Icon(Icons.Filled.Build, contentDescription = null) },
+                        icon = { Icon(painterResource(R.drawable.ic_nav_harness), contentDescription = null) },
                         label = { Text("Harness") },
                         colors = navItemColors(),
                     )
                     NavigationBarItem(
                         selected = tab == 2,
                         onClick = { tab = 2 },
-                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                        icon = { Icon(painterResource(R.drawable.ic_nav_settings), contentDescription = null) },
                         label = { Text("设置") },
                         colors = navItemColors(),
                     )

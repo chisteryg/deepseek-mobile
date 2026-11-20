@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.deepseek.mobile.data.SettingsStore
 import com.deepseek.mobile.util.arr
+import com.deepseek.mobile.util.bool
 import com.deepseek.mobile.util.int
 import com.deepseek.mobile.util.obj
 import com.deepseek.mobile.util.str
@@ -20,6 +21,8 @@ import kotlinx.serialization.json.JsonObject
 private val RENDERED_EVENTS = setOf(
     "user/message",
     "assistant/message",
+    "tool/call",
+    "tool/result",
 )
 
 data class TranscriptEntry(
@@ -28,11 +31,21 @@ data class TranscriptEntry(
     val data: JsonObject,
 )
 
+/** One tool invocation attached to a turn, with its live status and result. */
+data class HarnessTool(
+    val callId: String,
+    val name: String,
+    val args: String,
+    val status: String,
+    val result: String = "",
+)
+
 /** One user prompt plus every assistant step that answered it. */
 data class HarnessTurn(
     val key: Int,
     val userText: String,
     val blocks: List<JsonObject>,
+    val tools: List<HarnessTool> = emptyList(),
     val streaming: Boolean,
 )
 
@@ -61,6 +74,11 @@ data class HarnessUiState(
     val hostName: String? = null,
     val lastSync: Long = 0L,
     val connectionError: String? = null,
+    val permissions: SessionPermissions? = null,
+    val permissionsLoading: Boolean = false,
+    val pendingImages: List<String> = emptyList(),
+    val pendingFiles: List<BridgeUpload> = emptyList(),
+    val uploadingFile: String? = null,
 )
 
 class HarnessViewModel(
@@ -154,9 +172,14 @@ class HarnessViewModel(
             state = BridgeSessionState(running = session.running),
             error = null,
             modelsError = null,
+            permissions = null,
+            pendingImages = emptyList(),
+            pendingFiles = emptyList(),
+            uploadingFile = null,
         )
         startStream(session.id)
         loadModels()
+        loadPermissions()
     }
 
     fun close() {
@@ -170,18 +193,107 @@ class HarnessViewModel(
             catalog = null,
             selection = null,
             modelsError = null,
+            permissions = null,
+            pendingImages = emptyList(),
+            pendingFiles = emptyList(),
+            uploadingFile = null,
         )
         refresh()
     }
 
     fun send(text: String) {
         val session = _state.value.session ?: return
-        if (text.isBlank()) return
+        val images = _state.value.pendingImages
+        val files = _state.value.pendingFiles.map { it.receiptId }
+        if (text.isBlank() && images.isEmpty() && files.isEmpty()) return
         viewModelScope.launch {
             try {
-                client.prompt(session.id, text.trim())
+                client.prompt(session.id, text.trim(), files = files, images = images)
+                _state.value = _state.value.copy(pendingImages = emptyList(), pendingFiles = emptyList())
             } catch (error: Exception) {
                 _state.value = _state.value.copy(error = error.message ?: "发送失败")
+            }
+        }
+    }
+
+    fun addImage(base64: String) {
+        _state.value = _state.value.copy(
+            pendingImages = (_state.value.pendingImages + base64).take(4),
+        )
+    }
+
+    fun removeImage(index: Int) {
+        _state.value = _state.value.copy(
+            pendingImages = _state.value.pendingImages.filterIndexed { i, _ -> i != index },
+        )
+    }
+
+    fun removeFile(index: Int) {
+        _state.value = _state.value.copy(
+            pendingFiles = _state.value.pendingFiles.filterIndexed { i, _ -> i != index },
+        )
+    }
+
+    fun uploadFile(name: String, bytes: ByteArray) {
+        val session = _state.value.session ?: return
+        if (_state.value.uploadingFile != null) return
+        _state.value = _state.value.copy(uploadingFile = name)
+        viewModelScope.launch {
+            try {
+                val uploaded = client.uploadDocument(session.id, bytes, name)
+                _state.value = _state.value.copy(
+                    pendingFiles = (_state.value.pendingFiles + uploaded).take(4),
+                    uploadingFile = null,
+                )
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    uploadingFile = null,
+                    error = error.message ?: "文件上传失败",
+                )
+            }
+        }
+    }
+
+    fun loadPermissions() {
+        val session = _state.value.session ?: return
+        if (_state.value.permissionsLoading) return
+        _state.value = _state.value.copy(permissionsLoading = true)
+        viewModelScope.launch {
+            try {
+                val value = client.permissions(session.id)
+                _state.value = _state.value.copy(permissions = value, permissionsLoading = false)
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(
+                    permissionsLoading = false,
+                    error = error.message ?: "读取权限失败",
+                )
+            }
+        }
+    }
+
+    fun applyPreset(value: String) {
+        val session = _state.value.session ?: return
+        viewModelScope.launch {
+            try {
+                val next = client.setPermissions(session.id, preset = value)
+                _state.value = _state.value.copy(permissions = next, notice = "权限已切换为 $value")
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(error = error.message ?: "切换权限失败")
+            }
+        }
+    }
+
+    fun applyApprovalPolicy(policy: String) {
+        val session = _state.value.session ?: return
+        viewModelScope.launch {
+            try {
+                val next = client.setPermissions(session.id, approvalPolicy = policy)
+                _state.value = _state.value.copy(
+                    permissions = next,
+                    notice = if (policy == "never") "已关闭审批询问" else "已开启审批询问",
+                )
+            } catch (error: Exception) {
+                _state.value = _state.value.copy(error = error.message ?: "切换审批策略失败")
             }
         }
     }
@@ -331,48 +443,84 @@ class HarnessViewModel(
     }
 
     /** Fold user prompts and the assistant steps that follow into read turns. */
+    private class TurnBuilder(val key: Int) {
+        var userText: String = ""
+        val blocks = mutableListOf<JsonObject>()
+        val tools = linkedMapOf<String, HarnessTool>()
+
+        fun addTool(tool: HarnessTool) {
+            tools[tool.callId] = tool
+        }
+
+        fun finishTool(callId: String, status: String, result: String) {
+            val current = tools[callId] ?: return
+            tools[callId] = current.copy(status = status, result = result)
+        }
+
+        fun build(streaming: Boolean): HarnessTurn = HarnessTurn(
+            key = key,
+            userText = userText,
+            blocks = blocks.toList(),
+            tools = tools.values.toList(),
+            streaming = streaming,
+        )
+    }
+
     private fun buildTurns(entries: List<TranscriptEntry>, running: Boolean): List<HarnessTurn> {
-        val turns = mutableListOf<HarnessTurn>()
+        val turns = mutableListOf<TurnBuilder>()
+
+        fun currentTurn(seq: Int): TurnBuilder =
+            turns.lastOrNull() ?: TurnBuilder(seq).also { turns.add(it) }
+
         for (entry in entries) {
             when (entry.type) {
                 "user/message" -> {
-                    val contentText = entry.data.arr("content")
+                    val text = entry.data.arr("content")
                         ?.mapNotNull { block -> (block as? JsonObject)?.str("text") }
                         ?.joinToString("\n")
                         .orEmpty()
-                    if (contentText.isNotBlank()) {
-                        turns.add(
-                            HarnessTurn(
-                                key = entry.seq,
-                                userText = contentText,
-                                blocks = emptyList(),
-                                streaming = false,
-                            ),
-                        )
+                    if (text.isNotBlank()) {
+                        turns.add(TurnBuilder(entry.seq).also { it.userText = text })
                     }
                 }
                 "assistant/message" -> {
-                    val blocks = entry.data.obj("message")?.arr("content")?.mapNotNull { it as? JsonObject }
+                    val blocks = entry.data.obj("message")?.arr("content")
+                        ?.mapNotNull { it as? JsonObject }
                         ?: emptyList()
-                    if (blocks.isEmpty()) continue
-                    val last = turns.lastOrNull()
-                    if (last != null && last.userText.isNotEmpty() && last.blocks.isEmpty()) {
-                        turns[turns.lastIndex] = last.copy(blocks = blocks)
-                    } else {
-                        turns.add(
-                            HarnessTurn(
-                                key = entry.seq,
-                                userText = "",
-                                blocks = blocks,
-                                streaming = false,
-                            ),
-                        )
+                    if (blocks.isNotEmpty()) currentTurn(entry.seq).blocks.addAll(blocks)
+                }
+                "tool/call" -> {
+                    val callId = entry.data.str("callId") ?: "call-${entry.seq}"
+                    currentTurn(entry.seq).addTool(
+                        HarnessTool(
+                            callId = callId,
+                            name = entry.data.str("name").orEmpty().ifBlank { "tool" },
+                            args = entry.data.str("arguments").orEmpty(),
+                            status = "running",
+                        ),
+                    )
+                }
+                "tool/result" -> {
+                    val message = entry.data.obj("message")
+                    val callId = message?.str("toolCallId")
+                        ?: entry.data.str("callId")
+                        ?: continue
+                    val text = message?.arr("content")
+                        ?.mapNotNull { block -> (block as? JsonObject)?.str("text") }
+                        ?.joinToString("\n")
+                        .orEmpty()
+                    val failed = message?.bool("isError") == true || entry.data.bool("isError") == true
+                    for (builder in turns.asReversed()) {
+                        if (builder.tools.containsKey(callId)) {
+                            builder.finishTool(callId, if (failed) "error" else "ok", text)
+                            break
+                        }
                     }
                 }
             }
         }
-        return turns.mapIndexed { index, turn ->
-            turn.copy(streaming = running && index == turns.lastIndex)
+        return turns.mapIndexed { index, builder ->
+            builder.build(streaming = running && index == turns.lastIndex)
         }
     }
 

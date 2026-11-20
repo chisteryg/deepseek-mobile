@@ -39,7 +39,9 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -138,8 +140,7 @@ fun ChatSection(
             balance = balance,
             onOpen = vm::open,
             onNew = vm::newConversation,
-            onDelete = vm::delete,
-            onRename = vm::rename,
+            onDeleteMany = vm::deleteMany,
             onOpenSettings = onOpenSettings,
         )
     } else {
@@ -163,32 +164,54 @@ private fun ChatListScreen(
     balance: BalanceState,
     onOpen: (String) -> Unit,
     onNew: () -> Unit,
-    onDelete: (String) -> Unit,
-    onRename: (String, String) -> Unit,
+    onDeleteMany: (Set<String>) -> Unit,
     onOpenSettings: () -> Unit,
 ) {
     val palette = LocalDsPalette.current
-    var renameTarget by remember { mutableStateOf<Conversation?>(null) }
-    var deleteTarget by remember { mutableStateOf<Conversation?>(null) }
+    var selecting by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var confirmDelete by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
+
+    fun exitSelection() {
+        selecting = false
+        selected = emptySet()
+    }
 
     Column(Modifier.fillMaxSize().background(palette.background)) {
         DsTopBar(
-            title = "对话",
+            title = if (selecting) "已选 ${selected.size}" else "对话",
             centered = true,
+            onBack = if (selecting) ({ exitSelection() }) else null,
             actions = {
-                IconButton(onClick = onNew) {
-                    Icon(Icons.Filled.Add, contentDescription = "新对话", tint = palette.textPrimary)
-                }
-                Box {
-                    IconButton(onClick = { menuOpen = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "更多", tint = palette.textPrimary)
+                if (selecting) {
+                    TextAction("全选", palette.brand) {
+                        selected = if (selected.size == conversations.size) {
+                            emptySet()
+                        } else {
+                            conversations.map { it.id }.toSet()
+                        }
                     }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("设置") }, onClick = {
-                            menuOpen = false
-                            onOpenSettings()
-                        })
+                    TextAction("删除", palette.danger, enabled = selected.isNotEmpty()) {
+                        confirmDelete = true
+                    }
+                } else {
+                    IconButton(onClick = onNew) {
+                        Icon(Icons.Filled.Add, contentDescription = "新对话", tint = palette.textPrimary)
+                    }
+                    IconButton(onClick = { selecting = true }) {
+                        Icon(Icons.Filled.List, contentDescription = "多选", tint = palette.textPrimary)
+                    }
+                    Box {
+                        IconButton(onClick = { menuOpen = true }) {
+                            Icon(Icons.Filled.MoreVert, contentDescription = "更多", tint = palette.textPrimary)
+                        }
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(text = { Text("设置") }, onClick = {
+                                menuOpen = false
+                                onOpenSettings()
+                            })
+                        }
                     }
                 }
             },
@@ -212,7 +235,7 @@ private fun ChatListScreen(
                             item(key = "header-$bucket") {
                                 Text(
                                     bucket,
-                                    modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 6.dp),
+                                    modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 18.dp, bottom = 6.dp),
                                     style = MaterialTheme.typography.labelMedium,
                                     color = palette.textTertiary,
                                 )
@@ -220,32 +243,49 @@ private fun ChatListScreen(
                             items(items, key = { it.id }) { conversation ->
                                 ConversationRow(
                                     conversation = conversation,
-                                    onClick = { onOpen(conversation.id) },
-                                    onLongClick = { renameTarget = conversation },
+                                    selecting = selecting,
+                                    selected = conversation.id in selected,
+                                    onClick = {
+                                        if (selecting) {
+                                            selected = if (conversation.id in selected) {
+                                                selected - conversation.id
+                                            } else {
+                                                selected + conversation.id
+                                            }
+                                        } else {
+                                            onOpen(conversation.id)
+                                        }
+                                    },
+                                    onLongClick = {
+                                        selecting = true
+                                        selected = selected + conversation.id
+                                    },
                                 )
                             }
                         }
                     }
                 }
-                Row(
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 20.dp)
-                        .clip(RoundedCornerShape(999.dp))
-                        .background(palette.surface)
-                        .border(0.5.dp, palette.border, RoundedCornerShape(999.dp))
-                        .clickable { onNew() }
-                        .padding(horizontal = 18.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        Icons.Filled.Add,
-                        contentDescription = null,
-                        tint = palette.brand,
-                        modifier = Modifier.size(17.dp),
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("开启新对话", style = MaterialTheme.typography.labelLarge, color = palette.brand)
+                if (!selecting) {
+                    Row(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 20.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(palette.surface)
+                            .border(0.5.dp, palette.border, RoundedCornerShape(999.dp))
+                            .clickable { onNew() }
+                            .padding(horizontal = 18.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = null,
+                            tint = palette.brand,
+                            modifier = Modifier.size(17.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text("开启新对话", style = MaterialTheme.typography.labelLarge, color = palette.brand)
+                    }
                 }
             }
         }
@@ -260,32 +300,42 @@ private fun ChatListScreen(
         }
     }
 
-    renameTarget?.let { target ->
-        RenameDialog(
-            initial = target.title,
-            onDismiss = { renameTarget = null },
-            onConfirm = {
-                onRename(target.id, it)
-                renameTarget = null
+    if (confirmDelete) {
+        AlertDialog(
+            onDismissRequest = { confirmDelete = false },
+            title = { Text("删除对话") },
+            text = { Text("将永久删除选中的 ${selected.size} 个对话。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmDelete = false
+                    onDeleteMany(selected)
+                    exitSelection()
+                }) { Text("删除", color = palette.danger) }
             },
-            onDelete = {
-                renameTarget = null
-                deleteTarget = target
+            dismissButton = {
+                TextButton(onClick = { confirmDelete = false }) { Text("取消") }
             },
         )
     }
-    deleteTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { deleteTarget = null },
-            title = { Text("删除对话") },
-            text = { Text("「${target.title}」将被永久删除。") },
-            confirmButton = {
-                TextButton(onClick = {
-                    onDelete(target.id)
-                    deleteTarget = null
-                }) { Text("删除", color = palette.danger) }
-            },
-            dismissButton = { TextButton(onClick = { deleteTarget = null }) { Text("取消") } },
+}
+
+@Composable
+private fun TextAction(
+    text: String,
+    color: Color,
+    enabled: Boolean = true,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .clickable(enabled = enabled) { onClick() }
+            .padding(horizontal = 10.dp, vertical = 6.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (enabled) color else LocalDsPalette.current.textTertiary,
         )
     }
 }
@@ -294,6 +344,8 @@ private fun ChatListScreen(
 @Composable
 private fun ConversationRow(
     conversation: Conversation,
+    selecting: Boolean,
+    selected: Boolean,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
 ) {
@@ -305,6 +357,26 @@ private fun ConversationRow(
             .padding(horizontal = 22.dp, vertical = 15.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selecting) {
+            Box(
+                Modifier
+                    .size(20.dp)
+                    .clip(CircleShape)
+                    .background(if (selected) palette.brand else palette.surface)
+                    .border(1.2.dp, if (selected) palette.brand else palette.border, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (selected) {
+                    Icon(
+                        Icons.Filled.Check,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.width(12.dp))
+        }
         Column(Modifier.weight(1f)) {
             Text(
                 conversation.title,
@@ -337,36 +409,6 @@ private fun ConversationRow(
             }
         }
     }
-}
-
-@Composable
-private fun RenameDialog(
-    initial: String,
-    onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
-    onDelete: () -> Unit,
-) {
-    var value by rememberSaveable { mutableStateOf(initial) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("重命名") },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = { value = it },
-                    singleLine = true,
-                    shape = RoundedCornerShape(12.dp),
-                )
-                Spacer(Modifier.height(8.dp))
-                TextButton(onClick = onDelete) {
-                    Text("删除这个对话", color = LocalDsPalette.current.danger)
-                }
-            }
-        },
-        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("保存") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
-    )
 }
 
 // ---------------------------------------------------------------- detail
@@ -458,12 +500,12 @@ private fun ChatDetailScreen(
     BackHandler { if (!streaming) vm.close() }
 
     LaunchedEffect(listState) {
-        var wasScrolling = false
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
             if (scrolling) {
-                wasScrolling = true
-            } else if (wasScrolling) {
-                wasScrolling = false
+                // A finger is on the list: stop following immediately so the
+                // next streaming block cannot yank the viewport back.
+                follow = false
+            } else {
                 follow = !listState.canScrollForward
             }
         }
@@ -606,6 +648,7 @@ private fun ChatDetailScreen(
                 input = ""
                 attached = emptyList()
                 attachedFiles = emptyList()
+                follow = true
                 vm.send(text, images, files)
             },
             onStop = vm::stop,
@@ -793,6 +836,7 @@ private fun ComposerArea(
                 onSendOrStop = { if (streaming) onStop() else onSend() },
                 onAttach = onAttach,
                 disclaimer = "回答由 AI 生成，仅供参考",
+                sendEnabled = input.isNotBlank() || attached.isNotEmpty() || attachedFiles.isNotEmpty(),
                 above = {
                     DsPill(
                         text = "深度思考",
@@ -1125,6 +1169,7 @@ private fun ThinkingBlock(block: JsonObject, streaming: Boolean, thinkingMs: Lon
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TextBlock(block: JsonObject) {
     val palette = LocalDsPalette.current
@@ -1135,46 +1180,56 @@ private fun TextBlock(block: JsonObject) {
         MarkdownText(text)
         val citations = block.arr("citations")?.objects().orEmpty()
         if (citations.isNotEmpty()) {
-            Spacer(Modifier.height(10.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                citations.forEachIndexed { index, citation ->
+            Spacer(Modifier.height(8.dp))
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                citations.take(5).forEachIndexed { index, citation ->
                     val url = citation.str("url").orEmpty()
-                    val title = citation.str("title") ?: url
+                    val host = url.substringAfter("://").substringBefore('/').ifBlank { url }
                     Row(
                         Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(999.dp))
                             .background(palette.surfaceMuted)
                             .clickable {
                                 if (url.isNotBlank()) {
                                     runCatching {
                                         context.startActivity(
-                                            android.content.Intent(android.content.Intent.ACTION_VIEW, Uri.parse(url)),
+                                            android.content.Intent(
+                                                android.content.Intent.ACTION_VIEW,
+                                                Uri.parse(url),
+                                            ),
                                         )
                                     }
                                 }
                             }
-                            .padding(horizontal = 10.dp, vertical = 8.dp),
+                            .padding(horizontal = 9.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
                             "${index + 1}",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = palette.brand,
-                            modifier = Modifier.width(18.dp),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textTertiary,
                         )
+                        Spacer(Modifier.width(5.dp))
                         Text(
-                            title,
-                            style = MaterialTheme.typography.labelMedium,
+                            host,
+                            style = MaterialTheme.typography.labelSmall,
                             color = palette.textSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.widthIn(max = 150.dp),
                         )
-                        if (url.isNotBlank()) {
-                            Text("来源", style = MaterialTheme.typography.labelSmall, color = palette.brand)
-                        }
                     }
+                }
+                if (citations.size > 5) {
+                    Text(
+                        "+${citations.size - 5}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = palette.textTertiary,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                    )
                 }
             }
         }
@@ -1301,6 +1356,36 @@ private fun durationLabel(ms: Long): String {
     } else {
         "${totalSeconds / 60} 分 ${totalSeconds % 60} 秒"
     }
+}
+
+@Composable
+private fun RenameDialog(
+    initial: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+    onDelete: () -> Unit,
+) {
+    var value by rememberSaveable { mutableStateOf(initial) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("重命名") },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = value,
+                    onValueChange = { value = it },
+                    singleLine = true,
+                    shape = RoundedCornerShape(12.dp),
+                )
+                Spacer(Modifier.height(8.dp))
+                TextButton(onClick = onDelete) {
+                    Text("删除这个对话", color = LocalDsPalette.current.danger)
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(value) }) { Text("保存") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("取消") } },
+    )
 }
 
 private fun count(value: Int): String =

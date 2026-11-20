@@ -1,6 +1,9 @@
 package com.deepseek.mobile.ui.harness
 
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.border
@@ -21,6 +24,7 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -57,15 +61,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.FileProvider
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.deepseek.mobile.util.ImageUtil
 import com.deepseek.mobile.harness.BridgeInteraction
 import com.deepseek.mobile.harness.BridgeSession
+import com.deepseek.mobile.harness.HarnessTool
 import com.deepseek.mobile.harness.HarnessTurn
 import com.deepseek.mobile.harness.HarnessUiState
 import com.deepseek.mobile.harness.HarnessViewModel
@@ -87,6 +98,7 @@ import com.deepseek.mobile.util.str
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonObject
+import java.io.File
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -491,17 +503,68 @@ private fun SessionDetail(
     var input by rememberSaveable(session.id) { mutableStateOf("") }
     var modelSheet by remember { mutableStateOf(false) }
     var follow by remember { mutableStateOf(true) }
+    val context = LocalContext.current
+    var attachSheet by remember { mutableStateOf(false) }
+    var permissionSheet by remember { mutableStateOf(false) }
+    val uploadScope = rememberCoroutineScope()
+
+    val galleryLauncher = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: android.net.Uri? ->
+        if (uri != null) {
+            uploadScope.launch {
+                val encoded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    ImageUtil.encodeBase64(context, uri)
+                }
+                if (encoded != null) vm.addImage(encoded)
+            }
+        }
+    }
+    var cameraUri by remember { mutableStateOf<android.net.Uri?>(null) }
+    val cameraLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { ok ->
+        val uri = cameraUri
+        if (ok && uri != null) {
+            uploadScope.launch {
+                val encoded = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                    ImageUtil.encodeBase64(context, uri)
+                }
+                if (encoded != null) vm.addImage(encoded)
+            }
+        }
+    }
+    val documentLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: android.net.Uri? ->
+        if (uri != null) {
+            uploadScope.launch {
+                try {
+                    val payload = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                        val name = queryDisplayName(context, uri)
+                        val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+                            ?: throw IllegalStateException("无法读取文件")
+                        if (bytes.size > 32 * 1024 * 1024) throw IllegalStateException("文件超过 32 MiB")
+                        name to bytes
+                    }
+                    vm.uploadFile(payload.first, payload.second)
+                } catch (error: Exception) {
+                    vm.dismiss()
+                }
+            }
+        }
+    }
+
+    fun launchCamera() {
+        val dir = File(context.cacheDir, "camera").apply { mkdirs() }
+        val file = File(dir, "photo_${System.currentTimeMillis()}.jpg")
+        val uri = FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
+        cameraUri = uri
+        cameraLauncher.launch(uri)
+    }
     val scope = rememberCoroutineScope()
 
     BackHandler { vm.close() }
 
     LaunchedEffect(listState) {
-        var wasScrolling = false
         snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
             if (scrolling) {
-                wasScrolling = true
-            } else if (wasScrolling) {
-                wasScrolling = false
+                follow = false
+            } else {
                 follow = !listState.canScrollForward
             }
         }
@@ -613,6 +676,54 @@ private fun SessionDetail(
                     .navigationBarsPadding()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
             ) {
+                if (state.pendingImages.isNotEmpty() || state.pendingFiles.isNotEmpty() || state.uploadingFile != null) {
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        state.pendingFiles.forEachIndexed { index, file ->
+                            HarnessFileChip(
+                                name = file.name,
+                                busy = false,
+                                onRemove = { vm.removeFile(index) },
+                            )
+                        }
+                        if (state.uploadingFile != null) {
+                            HarnessFileChip(name = state.uploadingFile, busy = true, onRemove = null)
+                        }
+                        state.pendingImages.forEachIndexed { index, encoded ->
+                            Box(
+                                Modifier
+                                    .size(40.dp)
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(palette.surfaceMuted),
+                            ) {
+                                val bitmap = remember(encoded) { ImageUtil.decodeThumbnail(encoded, 120) }
+                                if (bitmap != null) {
+                                    Image(
+                                        bitmap = bitmap.asImageBitmap(),
+                                        contentDescription = null,
+                                        contentScale = ContentScale.Crop,
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
+                                }
+                                Box(
+                                    Modifier
+                                        .align(Alignment.TopEnd)
+                                        .padding(2.dp)
+                                        .size(14.dp)
+                                        .clip(CircleShape)
+                                        .background(androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.55f))
+                                        .clickable { vm.removeImage(index) },
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    Text("×", color = androidx.compose.ui.graphics.Color.White, fontSize = 9.sp)
+                                }
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(8.dp))
+                }
                 DsComposer(
                     value = input,
                     onValueChange = { input = it },
@@ -624,9 +735,14 @@ private fun SessionDetail(
                         } else {
                             val text = input
                             input = ""
+                            follow = true
                             vm.send(text)
                         }
                     },
+                    onAttach = { attachSheet = true },
+                    sendEnabled = input.isNotBlank() ||
+                        state.pendingImages.isNotEmpty() ||
+                        state.pendingFiles.isNotEmpty(),
                     above = {
                         DsPill(
                             text = modelLabel,
@@ -642,6 +758,17 @@ private fun SessionDetail(
                                 onClick = { modelSheet = true },
                             )
                         }
+                        DsPill(
+                            text = "权限 ${state.permissions?.preset ?: "默认"}",
+                            selected = state.permissions != null,
+                            onClick = {
+                                if (state.permissions?.catalog == null) {
+                                    vm.loadPermissions()
+                                } else {
+                                    permissionSheet = true
+                                }
+                            },
+                        )
                     },
                     disclaimer = if (state.state.running) {
                         "桌面端这一轮正在运行，可随时停止"
@@ -663,6 +790,128 @@ private fun SessionDetail(
             },
             onDismiss = { modelSheet = false },
         )
+    }
+    if (attachSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { attachSheet = false },
+            containerColor = palette.background,
+        ) {
+            Row(
+                Modifier
+                    .navigationBarsPadding()
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                HarnessAttachTile("拍照", "◉", Modifier.weight(1f)) {
+                    attachSheet = false
+                    launchCamera()
+                }
+                HarnessAttachTile("相册", "▣", Modifier.weight(1f)) {
+                    attachSheet = false
+                    galleryLauncher.launch("image/*")
+                }
+                HarnessAttachTile("文件", "▤", Modifier.weight(1f)) {
+                    attachSheet = false
+                    documentLauncher.launch(
+                        arrayOf(
+                            "application/pdf",
+                            "application/msword",
+                            "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            "application/vnd.ms-powerpoint",
+                            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                            "application/vnd.ms-excel",
+                            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            "text/*",
+                            "application/json",
+                        ),
+                    )
+                }
+            }
+            Spacer(Modifier.height(20.dp))
+        }
+    }
+
+    if (permissionSheet) {
+        val permissions = state.permissions
+        ModalBottomSheet(
+            onDismissRequest = { permissionSheet = false },
+            containerColor = palette.surface,
+        ) {
+            Column(Modifier.navigationBarsPadding().padding(bottom = 16.dp)) {
+                Text(
+                    "权限与审批",
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = palette.textPrimary,
+                )
+                permissions?.catalog?.options.orEmpty().forEach { option ->
+                    val current = permissions?.preset == option.value
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                vm.applyPreset(option.value)
+                                permissionSheet = false
+                            }
+                            .padding(horizontal = 20.dp, vertical = 13.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                option.name,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = if (current) palette.brand else palette.textPrimary,
+                            )
+                            option.description?.let {
+                                Text(
+                                    it,
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = palette.textTertiary,
+                                )
+                            }
+                        }
+                        if (current) {
+                            Text("当前", style = MaterialTheme.typography.labelSmall, color = palette.brand)
+                        }
+                    }
+                }
+                HarnessDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            "审批询问",
+                            style = MaterialTheme.typography.bodyLarge,
+                            color = palette.textPrimary,
+                        )
+                        Text(
+                            if (permissions?.approvalPolicy == "never") {
+                                "当前自动拒绝需要审批的操作"
+                            } else {
+                                "当前会询问是否允许敏感操作"
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = palette.textTertiary,
+                        )
+                    }
+                    DsPill(
+                        text = if (permissions?.approvalPolicy == "never") "关闭" else "开启",
+                        selected = permissions?.approvalPolicy != "never",
+                        onClick = {
+                            vm.applyApprovalPolicy(
+                                if (permissions?.approvalPolicy == "never") "ask" else "never",
+                            )
+                            permissionSheet = false
+                        },
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -760,6 +1009,90 @@ private fun ModelSheet(
 }
 
 @Composable
+private fun HarnessAttachTile(
+    label: String,
+    symbol: String,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    val palette = LocalDsPalette.current
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(16.dp))
+            .background(palette.surfaceMuted)
+            .clickable { onClick() }
+            .padding(vertical = 22.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(symbol, fontSize = 24.sp, color = palette.textPrimary)
+        Spacer(Modifier.height(10.dp))
+        Text(label, style = MaterialTheme.typography.bodyMedium, color = palette.textPrimary)
+    }
+}
+
+@Composable
+private fun HarnessFileChip(name: String, busy: Boolean, onRemove: (() -> Unit)?) {
+    val palette = LocalDsPalette.current
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(999.dp))
+            .background(palette.surfaceMuted)
+            .padding(start = 10.dp, end = if (onRemove != null) 6.dp else 12.dp, top = 5.dp, bottom = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (busy) {
+            CircularProgressIndicator(Modifier.size(11.dp), strokeWidth = 1.6.dp, color = palette.brand)
+        } else {
+            Text("▤", style = MaterialTheme.typography.labelMedium, color = palette.brand)
+        }
+        Spacer(Modifier.width(6.dp))
+        Text(
+            name,
+            style = MaterialTheme.typography.labelMedium,
+            color = palette.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 150.dp),
+        )
+        if (onRemove != null) {
+            Box(
+                Modifier
+                    .padding(start = 4.dp)
+                    .size(16.dp)
+                    .clip(CircleShape)
+                    .clickable { onRemove() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("×", style = MaterialTheme.typography.labelSmall, color = palette.textTertiary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun HarnessDivider() {
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 8.dp)
+            .height(0.5.dp)
+            .background(LocalDsPalette.current.border),
+    )
+}
+
+private fun queryDisplayName(context: android.content.Context, uri: android.net.Uri): String {
+    val cursor = context.contentResolver.query(uri, null, null, null, null)
+    cursor?.use {
+        val index = it.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
+        if (index >= 0 && it.moveToFirst()) {
+            val name = it.getString(index)
+            if (!name.isNullOrBlank()) return name
+        }
+    }
+    return uri.lastPathSegment?.substringAfterLast('/') ?: "文件"
+}
+
+@Composable
 private fun ApprovalCard(
     interaction: BridgeInteraction,
     onAllow: () -> Unit,
@@ -836,7 +1169,7 @@ private fun TurnView(turn: HarnessTurn) {
             }
             if (turn.blocks.isNotEmpty()) Spacer(Modifier.height(16.dp))
         }
-        if (turn.blocks.isEmpty()) {
+        if (turn.blocks.isEmpty() && turn.tools.isEmpty()) {
             if (turn.streaming) {
                 Text(
                     "正在处理…",
@@ -847,19 +1180,22 @@ private fun TurnView(turn: HarnessTurn) {
             return
         }
 
-        AssistantBlocks(turn.blocks, turn.streaming)
+        AssistantBlocks(turn.blocks, turn.tools, turn.streaming)
     }
 }
 
 @Composable
-private fun AssistantBlocks(blocks: List<JsonObject>, streaming: Boolean) {
+private fun AssistantBlocks(
+    blocks: List<JsonObject>,
+    tools: List<HarnessTool>,
+    streaming: Boolean,
+) {
     val palette = LocalDsPalette.current
     val thinking = blocks
         .filter { it.str("type") == "reasoning" || it.str("type") == "thinking" }
         .mapNotNull { it.str("text") ?: it.str("thinking") }
         .joinToString("\n\n")
     val texts = blocks.filter { it.str("type") == "text" }.mapNotNull { it.str("text") }.filter { it.isNotBlank() }
-    val toolCalls = blocks.filter { it.str("type") == "tool-call" || it.str("type") == "tool_call" }
 
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         if (thinking.isNotBlank()) {
@@ -907,12 +1243,132 @@ private fun AssistantBlocks(blocks: List<JsonObject>, streaming: Boolean) {
             }
         }
 
-        if (toolCalls.isNotEmpty()) {
-            ToolSummary(toolCalls)
+        if (tools.isNotEmpty()) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                tools.forEach { tool ->
+                    ToolCard(tool)
+                }
+            }
         }
 
         texts.forEach { text ->
             MarkdownText(text)
+        }
+    }
+}
+
+@Composable
+private fun ToolCard(tool: HarnessTool) {
+    val palette = LocalDsPalette.current
+    var expanded by rememberSaveable(tool.callId) { mutableStateOf(false) }
+    val running = tool.status == "running"
+    val failed = tool.status == "error"
+    val statusText = when {
+        running -> "执行中"
+        failed -> "失败"
+        else -> "完成"
+    }
+    val statusColor = when {
+        running -> palette.brand
+        failed -> palette.danger
+        else -> palette.success
+    }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .background(palette.surfaceMuted)
+            .clickable { expanded = !expanded }
+            .padding(horizontal = 12.dp, vertical = 10.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (running) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(12.dp),
+                    strokeWidth = 1.8.dp,
+                    color = palette.brand,
+                )
+            } else {
+                Text(
+                    if (failed) "!" else "✓",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = statusColor,
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text(
+                tool.name,
+                style = MaterialTheme.typography.labelLarge,
+                color = palette.textPrimary,
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                statusText,
+                style = MaterialTheme.typography.labelSmall,
+                color = statusColor,
+            )
+            Spacer(Modifier.weight(1f))
+            if (tool.args.isNotBlank() || tool.result.isNotBlank()) {
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    tint = palette.textTertiary,
+                    modifier = Modifier
+                        .size(18.dp)
+                        .rotate(if (expanded) 180f else 0f),
+                )
+            }
+        }
+        val summary = summarizeArguments(tool.args)
+        if (summary.isNotBlank()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                summary,
+                style = MaterialTheme.typography.labelSmall,
+                color = palette.textSecondary,
+                maxLines = if (expanded) 4 else 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+        if (expanded) {
+            if (tool.args.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "参数",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.textTertiary,
+                )
+                Text(
+                    tool.args,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                    ),
+                    color = palette.textSecondary,
+                    maxLines = 12,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (tool.result.isNotBlank()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "结果",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = palette.textTertiary,
+                )
+                Text(
+                    tool.result,
+                    style = MaterialTheme.typography.bodySmall.copy(
+                        fontFamily = FontFamily.Monospace,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                    ),
+                    color = if (failed) palette.danger else palette.textSecondary,
+                    maxLines = 14,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

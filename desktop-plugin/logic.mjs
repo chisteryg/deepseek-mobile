@@ -276,13 +276,31 @@ export function createBridge(ctx, config = {}) {
     const svc = controller()
     if (!svc) throw new Error('sessionController 尚未挂载')
     const value = String(body?.text ?? '')
-    if (!value.trim()) throw new Error('消息不能为空')
+    const content = []
+    if (Array.isArray(body?.files)) {
+      for (const receiptId of body.files) {
+        if (receiptId) content.push({ type: 'file', receiptId: String(receiptId) })
+      }
+    }
+    if (Array.isArray(body?.images)) {
+      for (const image of body.images) {
+        if (image && image.data) {
+          content.push({
+            type: 'image',
+            mediaType: String(image.mediaType || 'image/jpeg'),
+            data: String(image.data),
+          })
+        }
+      }
+    }
+    if (value.trim()) content.push({ type: 'text', text: value })
+    if (content.length === 0) throw new Error('消息不能为空')
     return svc.prompt(
       {
         requestId: randomUUID(),
         sessionId,
         mode: body?.mode === 'steer' ? 'steer' : 'queue',
-        content: [{ type: 'text', text: value }],
+        content,
         clientTimeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       },
       new AbortController().signal,
@@ -312,6 +330,56 @@ export function createBridge(ctx, config = {}) {
     if (body?.reasoningEffort) request.reasoningEffort = String(body.reasoningEffort)
     if (typeof svc.selectModel !== 'function') throw new Error('当前 DSH 版本不支持模型切换')
     return svc.selectModel(request)
+  }
+
+  async function uploadDocument(sessionId, body) {
+    const uploads = ctx.get('fileUploads')
+    if (!uploads) throw new Error('当前 DSH 版本不支持文件上传')
+    const encoded = String(body?.data ?? '')
+    if (!encoded) throw new Error('缺少文件内容')
+    const bytes = Buffer.from(encoded, 'base64')
+    const name = String(body?.name ?? 'file')
+    const chunks = (async function* () {
+      yield bytes
+    })()
+    const value = await uploads.uploadStream({ sessionId, data: chunks, name })
+    return {
+      receiptId: value.receiptId,
+      name: value.file?.name ?? name,
+      bytes: value.file?.bytes ?? bytes.length,
+    }
+  }
+
+  function sessionById(sessionId) {
+    const sessions = ctx.get('sessions')
+    if (!sessions) return null
+    return (sessions.list() || []).find((session) => session.id === sessionId) || null
+  }
+
+  async function readPermissions(sessionId) {
+    const session = sessionById(sessionId)
+    const presets = ctx.get('permissionPresets')
+    const approval = ctx.get('approval')
+    return {
+      preset: session && presets ? presets.current(session) : null,
+      approvalPolicy: session && approval ? approval.overrideOf(session) ?? null : null,
+      catalog: presets ? presets.catalog() : null,
+    }
+  }
+
+  async function writePermissions(sessionId, body) {
+    const session = sessionById(sessionId)
+    if (!session) throw new Error('会话不存在')
+    const presets = ctx.get('permissionPresets')
+    if (body?.preset && presets) presets.set(session, String(body.preset))
+    if (body?.approvalPolicy) {
+      const approval = ctx.get('approval')
+      const controller = ctx.get('sessionController')
+      if (!approval || !controller) throw new Error('当前 DSH 版本不支持审批策略')
+      const agent = await controller.resolveAgent(sessionId)
+      approval.setPolicy(agent, body.approvalPolicy === 'never' ? 'never' : 'ask')
+    }
+    return readPermissions(sessionId)
   }
 
   function interactions() {
@@ -587,6 +655,20 @@ export function createBridge(ctx, config = {}) {
         const body = await readBody(req)
         const value = await selectModel(sessionId, body)
         return json(res, 200, value ?? { accepted: true })
+      }
+      if (req.method === 'POST' && segments[3] === 'upload') {
+        const body = await readBody(req)
+        const value = await uploadDocument(sessionId, body)
+        return json(res, 200, value)
+      }
+      if (req.method === 'GET' && segments[3] === 'permissions') {
+        const value = await readPermissions(sessionId)
+        return json(res, 200, value)
+      }
+      if (req.method === 'POST' && segments[3] === 'permissions') {
+        const body = await readBody(req)
+        const value = await writePermissions(sessionId, body)
+        return json(res, 200, value)
       }
     }
 

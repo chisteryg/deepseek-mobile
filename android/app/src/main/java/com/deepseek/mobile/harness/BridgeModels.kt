@@ -38,6 +38,21 @@ data class PairResult(val token: String, val host: String, val port: Int, val na
 
 data class BridgeHealth(val name: String, val sessions: Int, val running: Int)
 
+data class BridgeUpload(val receiptId: String, val name: String, val bytes: Int)
+
+data class PermissionOption(val value: String, val name: String, val description: String?)
+
+data class PermissionCatalog(
+    val options: List<PermissionOption>,
+    val defaultPreset: String,
+)
+
+data class SessionPermissions(
+    val preset: String?,
+    val approvalPolicy: String?,
+    val catalog: PermissionCatalog?,
+)
+
 data class ModelEffort(val id: String, val name: String)
 
 data class ModelChoice(

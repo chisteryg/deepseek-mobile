@@ -306,6 +306,7 @@ fun DsComposer(
     onAttach: (() -> Unit)? = null,
     above: (@Composable RowScope.() -> Unit)? = null,
     disclaimer: String? = null,
+    sendEnabled: Boolean = value.isNotBlank(),
 ) {
     val palette = LocalDsPalette.current
     Column(modifier = modifier.fillMaxWidth()) {
@@ -380,7 +381,7 @@ fun DsComposer(
                     )
                 }
             } else {
-                val enabled = value.isNotBlank()
+                val enabled = sendEnabled
                 CircleActionButton(
                     icon = Icons.Filled.Send,
                     contentDescription = "发送",
